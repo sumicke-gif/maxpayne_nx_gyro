@@ -358,10 +358,12 @@ static void gyro_update(void) {
   if (hidGetSixAxisSensorStates(h, &st, 1) < 1)
     return;
 
-  // turns/sec -> deg/s; yaw = Y axis, pitch = X axis
-  // (if the axes are wrong swap .x/.y; if a direction is reversed, negate its sens in config.txt)
-  float yaw = st.angular_velocity.y * 360.0f;
-  float pitch = st.angular_velocity.x * 360.0f;
+  // turns/sec -> deg/s. Sensor frame: X = pitch, Y = roll, Z = yaw (yaw mode:
+  // turn the controller left/right like a steering wheel seen from above).
+  // Signs are flipped so right/up motions give positive-right / look-up stick values;
+  // if a direction is reversed, negate its sens in config.txt.
+  float yaw = -st.angular_velocity.z * 360.0f;
+  float pitch = -st.angular_velocity.x * 360.0f;
 
   // deadzone to kill drift/jitter (deg/s)
   const float dz = 1.5f;
