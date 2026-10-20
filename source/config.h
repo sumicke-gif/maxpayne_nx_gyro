@@ -40,6 +40,10 @@ typedef struct {
   int drop_highest_lod;
   int show_weapon_menu;
   int show_fps;
+  int gyro_enabled;
+  int gyro_invert_y;
+  float gyro_sens_x;
+  float gyro_sens_y;
   float decal_limit;
   float debris_limit;
   char mod_file[0x100];

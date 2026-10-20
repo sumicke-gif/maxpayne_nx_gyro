@@ -26,6 +26,10 @@
   CONFIG_VAR_INT(drop_highest_lod); \
   CONFIG_VAR_INT(show_weapon_menu); \
   CONFIG_VAR_INT(show_fps); \
+  CONFIG_VAR_INT(gyro_enabled); \
+  CONFIG_VAR_INT(gyro_invert_y); \
+  CONFIG_VAR_FLOAT(gyro_sens_x); \
+  CONFIG_VAR_FLOAT(gyro_sens_y); \
   CONFIG_VAR_FLOAT(decal_limit); \
   CONFIG_VAR_FLOAT(debris_limit); \
   CONFIG_VAR_STR(mod_file);
@@ -62,6 +66,10 @@ int read_config(const char *file) {
   config.drop_highest_lod = 0; // does this even do anything?
   config.show_weapon_menu = 0;
   config.show_fps = 0; // small FPS counter in the top left corner
+  config.gyro_enabled = 1;
+  config.gyro_invert_y = 0;
+  config.gyro_sens_x = 1.0f; // 1.0 = full stick deflection at 180 deg/s
+  config.gyro_sens_y = 1.0f;
   config.decal_limit = 0.5f;
   config.debris_limit = 1.0f;
 

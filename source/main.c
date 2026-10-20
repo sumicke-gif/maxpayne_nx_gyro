@@ -12,6 +12,7 @@
  */
 
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -321,8 +322,59 @@ static void update_touch(void) {
 static PadState pad;
 static u64 pad_prev = 0;
 
+// ---- gyro aiming ----
+// handles: [0] handheld, [1] pro controller, [2..3] joy-con pair, [4] left joy-con, [5] right joy-con
+static HidSixAxisSensorHandle gyro_handles[6];
+// gyro contribution to the right stick, in stick units
+static float gyro_x = 0.0f, gyro_y = 0.0f;
+
+static void gyro_init(void) {
+  hidGetSixAxisSensorHandles(&gyro_handles[0], 1, HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld);
+  hidGetSixAxisSensorHandles(&gyro_handles[1], 1, HidNpadIdType_No1, HidNpadStyleTag_NpadFullKey);
+  hidGetSixAxisSensorHandles(&gyro_handles[2], 2, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyDual);
+  hidGetSixAxisSensorHandles(&gyro_handles[4], 1, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyLeft);
+  hidGetSixAxisSensorHandles(&gyro_handles[5], 1, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyRight);
+  for (int i = 0; i < 6; ++i)
+    hidStartSixAxisSensor(gyro_handles[i]);
+}
+
+// the engine treats stick deflection as a turn rate, so angular velocity
+// maps onto it directly and the result doesn't depend on the frame rate
+static void gyro_update(void) {
+  gyro_x = gyro_y = 0.0f;
+  if (!config.gyro_enabled)
+    return;
+
+  const u32 style = padGetStyleSet(&pad);
+  HidSixAxisSensorHandle h;
+  if (style & HidNpadStyleTag_NpadHandheld) h = gyro_handles[0];
+  else if (style & HidNpadStyleTag_NpadFullKey) h = gyro_handles[1];
+  else if (style & HidNpadStyleTag_NpadJoyDual) h = gyro_handles[2];
+  else if (style & HidNpadStyleTag_NpadJoyLeft) h = gyro_handles[4];
+  else if (style & HidNpadStyleTag_NpadJoyRight) h = gyro_handles[5];
+  else return;
+
+  HidSixAxisSensorState st;
+  if (hidGetSixAxisSensorStates(h, &st, 1) < 1)
+    return;
+
+  // turns/sec -> deg/s; yaw = Y axis, pitch = X axis
+  // (if the axes are wrong swap .x/.y; if a direction is reversed, negate its sens in config.txt)
+  float yaw = st.angular_velocity.y * 360.0f;
+  float pitch = st.angular_velocity.x * 360.0f;
+
+  // deadzone to kill drift/jitter (deg/s)
+  const float dz = 1.5f;
+  if (fabsf(yaw) < dz) yaw = 0.0f;
+  if (fabsf(pitch) < dz) pitch = 0.0f;
+
+  gyro_x = yaw / 180.0f * config.gyro_sens_x;
+  gyro_y = pitch / 180.0f * config.gyro_sens_y * (config.gyro_invert_y ? -1.0f : 1.0f);
+}
+
 static void update_gamepad(void) {
   padUpdate(&pad);
+  gyro_update();
   const u64 down = padGetButtons(&pad);
   const u64 changed = down ^ pad_prev;
 
@@ -352,10 +404,18 @@ static void update_gamepad(void) {
   if (down & HidNpadButton_Up)    ly = -1.0f;
   if (down & HidNpadButton_Down)  ly =  1.0f;
 
+  // gyro is added on top of the right stick, clamped to the stick range
+  float rx = (float)rs.x * scale + gyro_x;
+  float ry = (float)rs.y * -scale + gyro_y;
+  if (rx > 1.0f) rx = 1.0f;
+  if (rx < -1.0f) rx = -1.0f;
+  if (ry > 1.0f) ry = 1.0f;
+  if (ry < -1.0f) ry = -1.0f;
+
   // Android Y axes point down.
   const float axes[6] = {
     lx, ly,
-    (float)rs.x * scale, (float)rs.y * -scale,
+    rx, ry,
     (down & HidNpadButton_ZL) ? 1.0f : 0.0f,
     (down & HidNpadButton_ZR) ? 1.0f : 0.0f,
   };
@@ -514,6 +574,7 @@ int main(void) {
 
   padConfigureInput(8, HidNpadStyleSet_NpadStandard);
   padInitializeAny(&pad);
+  gyro_init();
   hidInitializeTouchScreen();
   implOnGamepadConnected(fake_env, NULL, 0);
 
