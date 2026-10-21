@@ -346,24 +346,54 @@ static void gyro_update(void) {
     return;
 
   const u32 style = padGetStyleSet(&pad);
-  HidSixAxisSensorHandle h;
-  if (style & HidNpadStyleTag_NpadHandheld) h = gyro_handles[0];
-  else if (style & HidNpadStyleTag_NpadFullKey) h = gyro_handles[1];
-  else if (style & HidNpadStyleTag_NpadJoyDual) h = gyro_handles[2];
-  else if (style & HidNpadStyleTag_NpadJoyLeft) h = gyro_handles[4];
-  else if (style & HidNpadStyleTag_NpadJoyRight) h = gyro_handles[5];
+  int slot;
+  if (style & HidNpadStyleTag_NpadHandheld) slot = 0;
+  else if (style & HidNpadStyleTag_NpadFullKey) slot = 1;
+  else if (style & HidNpadStyleTag_NpadJoyDual) slot = 2;
+  else if (style & HidNpadStyleTag_NpadJoyLeft) slot = 4;
+  else if (style & HidNpadStyleTag_NpadJoyRight) slot = 5;
   else return;
+  const HidSixAxisSensorHandle h = gyro_handles[slot];
 
-  HidSixAxisSensorState st;
-  if (hidGetSixAxisSensorStates(h, &st, 1) < 1)
-    return;
+  // the sensor runs much faster than the game (~200Hz vs 30-60fps). reading only the newest
+  // sample throws away most of a fast flick, so average every sample since the last frame
+  // (weighted by its duration) to get the true mean rotation rate over the frame
+  HidSixAxisSensorState sts[32];
+  const s32 n = hidGetSixAxisSensorStates(h, sts, 32);
+  static u64 last_seen[6];
+  static float avg_w[3], last_acc[3];
+  float sw[3] = { 0, 0, 0 };
+  u64 sdt = 0, newest = last_seen[slot];
+  const u64 prev_seen = last_seen[slot];
+  for (int i = 0; i < n; ++i) {
+    if (sts[i].sampling_number <= prev_seen)
+      continue;
+    const u64 dt = sts[i].delta_time ? sts[i].delta_time : 5000000ULL;
+    sw[0] += sts[i].angular_velocity.x * (float)dt;
+    sw[1] += sts[i].angular_velocity.y * (float)dt;
+    sw[2] += sts[i].angular_velocity.z * (float)dt;
+    sdt += dt;
+    if (sts[i].sampling_number > newest) {
+      newest = sts[i].sampling_number;
+      last_acc[0] = sts[i].acceleration.x;
+      last_acc[1] = sts[i].acceleration.y;
+      last_acc[2] = sts[i].acceleration.z;
+    }
+  }
+  last_seen[slot] = newest;
+  // sample counter went backwards (sensor restarted): start over next frame
+  if (n > 0 && sts[0].sampling_number + 1000 < prev_seen && sts[n - 1].sampling_number + 1000 < prev_seen)
+    last_seen[slot] = 0;
+  if (sdt) {
+    for (int k = 0; k < 3; ++k) avg_w[k] = sw[k] / (float)sdt;
+  } // else: no new sample this frame, reuse the previous rate
 
   // turns/sec. Sensor frame: X = pitch, Y = roll, Z = yaw (when held level).
   // Signs are flipped so right/up motions give positive-right / look-up stick values;
   // if a direction is reversed, negate its sens in config.txt.
-  const float wx = st.angular_velocity.x;
-  const float wy = st.angular_velocity.y;
-  const float wz = st.angular_velocity.z;
+  const float wx = avg_w[0];
+  const float wy = avg_w[1];
+  const float wz = avg_w[2];
 
   float yaw = -wz * 360.0f;
   float pitch = -wx * 360.0f;
@@ -372,7 +402,7 @@ static void gyro_update(void) {
     // low-pass the accelerometer to track which way is down, ignoring quick movements
     static float gx = 0.0f, gy = 0.0f, gz = 0.0f;
     static int have_g = 0;
-    const float ax = st.acceleration.x, ay = st.acceleration.y, az = st.acceleration.z;
+    const float ax = last_acc[0], ay = last_acc[1], az = last_acc[2];
     const float amag = sqrtf(ax * ax + ay * ay + az * az);
     if (!have_g && amag > 0.5f) {
       gx = ax; gy = ay; gz = az;
@@ -389,27 +419,6 @@ static void gyro_update(void) {
       if (uz < 0.0f) { ux = -ux; uy = -uy; uz = -uz; }
       // yaw = rotation speed around the real vertical axis
       yaw = -(wx * ux + wy * uy + wz * uz) * 360.0f;
-
-      if (config.gyro_world_pitch) {
-        // pitch = rotation around the horizontal axis across the controller's pointing direction
-        // (sensor Y is the pointing axis): this ignores roll/wrist twist.
-        // f_h = pointing direction flattened onto the horizontal plane
-        const float fhx = -uy * ux, fhy = 1.0f - uy * uy, fhz = -uy * uz;
-        const float fmag = sqrtf(fhx * fhx + fhy * fhy + fhz * fhz);
-        if (fmag > 0.2f) {
-          const float inv = 1.0f / fmag;
-          const float hx = fhx * inv, hy = fhy * inv, hz = fhz * inv;
-          // world-horizontal "right" axis = f_h x up
-          const float rx = hy * uz - hz * uy;
-          const float ry = hz * ux - hx * uz;
-          const float rz = hx * uy - hy * ux;
-          const float wpitch = -(wx * rx + wy * ry + wz * rz) * 360.0f;
-          // fade back to the controller axis when pointing nearly straight up/down
-          float t = (fmag - 0.2f) / 0.2f;
-          if (t > 1.0f) t = 1.0f;
-          pitch = pitch + (wpitch - pitch) * t;
-        }
-      }
     }
   }
 
@@ -457,10 +466,11 @@ static void update_gamepad(void) {
   // gyro is added on top of the right stick, clamped to the stick range
   float rx = (float)rs.x * scale + gyro_x;
   float ry = (float)rs.y * -scale + gyro_y;
-  if (rx > 1.0f) rx = 1.0f;
-  if (rx < -1.0f) rx = -1.0f;
-  if (ry > 1.0f) ry = 1.0f;
-  if (ry < -1.0f) ry = -1.0f;
+  const float lim = config.gyro_clamp > 1.0f ? config.gyro_clamp : 1.0f;
+  if (rx > lim) rx = lim;
+  if (rx < -lim) rx = -lim;
+  if (ry > lim) ry = lim;
+  if (ry < -lim) ry = -lim;
 
   // Android Y axes point down.
   const float axes[6] = {

@@ -29,9 +29,9 @@
   CONFIG_VAR_INT(gyro_enabled); \
   CONFIG_VAR_INT(gyro_invert_y); \
   CONFIG_VAR_INT(gyro_gravity_yaw); \
-  CONFIG_VAR_INT(gyro_world_pitch); \
   CONFIG_VAR_FLOAT(gyro_sens_x); \
   CONFIG_VAR_FLOAT(gyro_sens_y); \
+  CONFIG_VAR_FLOAT(gyro_clamp); \
   CONFIG_VAR_FLOAT(decal_limit); \
   CONFIG_VAR_FLOAT(debris_limit); \
   CONFIG_VAR_STR(mod_file);
@@ -70,10 +70,10 @@ int read_config(const char *file) {
   config.show_fps = 0; // small FPS counter in the top left corner
   config.gyro_enabled = 1;
   config.gyro_invert_y = 0;
-  config.gyro_world_pitch = 1; // 1 = pitch around the world-horizontal axis (needs gyro_gravity_yaw), 0 = controller X axis
   config.gyro_gravity_yaw = 1; // 1 = yaw around real vertical (no roll leak), 0 = fixed sensor Z axis
   config.gyro_sens_x = 1.0f; // 1.0 = full stick deflection at 180 deg/s
   config.gyro_sens_y = 1.0f;
+  config.gyro_clamp = 1.0f; // max total right-stick deflection incl. gyro; try 2.0-3.0 if flicks feel capped
   config.decal_limit = 0.5f;
   config.debris_limit = 1.0f;
 
