@@ -358,12 +358,60 @@ static void gyro_update(void) {
   if (hidGetSixAxisSensorStates(h, &st, 1) < 1)
     return;
 
-  // turns/sec -> deg/s. Sensor frame: X = pitch, Y = roll, Z = yaw (yaw mode:
-  // turn the controller left/right like a steering wheel seen from above).
+  // turns/sec. Sensor frame: X = pitch, Y = roll, Z = yaw (when held level).
   // Signs are flipped so right/up motions give positive-right / look-up stick values;
   // if a direction is reversed, negate its sens in config.txt.
-  float yaw = -st.angular_velocity.z * 360.0f;
-  float pitch = -st.angular_velocity.x * 360.0f;
+  const float wx = st.angular_velocity.x;
+  const float wy = st.angular_velocity.y;
+  const float wz = st.angular_velocity.z;
+
+  float yaw = -wz * 360.0f;
+  float pitch = -wx * 360.0f;
+
+  if (config.gyro_gravity_yaw) {
+    // low-pass the accelerometer to track which way is down, ignoring quick movements
+    static float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+    static int have_g = 0;
+    const float ax = st.acceleration.x, ay = st.acceleration.y, az = st.acceleration.z;
+    const float amag = sqrtf(ax * ax + ay * ay + az * az);
+    if (!have_g && amag > 0.5f) {
+      gx = ax; gy = ay; gz = az;
+      have_g = 1;
+    } else if (amag > 0.7f && amag < 1.3f) {
+      gx += (ax - gx) * 0.08f;
+      gy += (ay - gy) * 0.08f;
+      gz += (az - gz) * 0.08f;
+    }
+    float gmag = sqrtf(gx * gx + gy * gy + gz * gz);
+    if (have_g && gmag > 0.5f) {
+      float ux = gx / gmag, uy = gy / gmag, uz = gz / gmag;
+      // keep the vertical axis on the same side as sensor Z so the sign matches the level case
+      if (uz < 0.0f) { ux = -ux; uy = -uy; uz = -uz; }
+      // yaw = rotation speed around the real vertical axis
+      yaw = -(wx * ux + wy * uy + wz * uz) * 360.0f;
+
+      if (config.gyro_world_pitch) {
+        // pitch = rotation around the horizontal axis across the controller's pointing direction
+        // (sensor Y is the pointing axis): this ignores roll/wrist twist.
+        // f_h = pointing direction flattened onto the horizontal plane
+        const float fhx = -uy * ux, fhy = 1.0f - uy * uy, fhz = -uy * uz;
+        const float fmag = sqrtf(fhx * fhx + fhy * fhy + fhz * fhz);
+        if (fmag > 0.2f) {
+          const float inv = 1.0f / fmag;
+          const float hx = fhx * inv, hy = fhy * inv, hz = fhz * inv;
+          // world-horizontal "right" axis = f_h x up
+          const float rx = hy * uz - hz * uy;
+          const float ry = hz * ux - hx * uz;
+          const float rz = hx * uy - hy * ux;
+          const float wpitch = -(wx * rx + wy * ry + wz * rz) * 360.0f;
+          // fade back to the controller axis when pointing nearly straight up/down
+          float t = (fmag - 0.2f) / 0.2f;
+          if (t > 1.0f) t = 1.0f;
+          pitch = pitch + (wpitch - pitch) * t;
+        }
+      }
+    }
+  }
 
   // deadzone to kill drift/jitter (deg/s)
   const float dz = 1.5f;
