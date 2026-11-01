@@ -431,10 +431,114 @@ static void gyro_update(void) {
   gyro_y = pitch / 180.0f * config.gyro_sens_y * (config.gyro_invert_y ? -1.0f : 1.0f);
 }
 
+
+// ---------------------------------------------------------------------------
+// keyboard + mouse: translated into the same inputs the gamepad produces.
+// keys are bound to *Switch button positions* (the game's own gamepad mapping
+// above does the rest), so edit the table below to rebind. the mouse moves the
+// right stick (so config.gyro_clamp also limits it), left/right click = ZR/ZL.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+  HidKeyboardKey key;
+  u64 pad;
+} KeyMap;
+
+static const KeyMap key_map[] = {
+  { HidKeyboardKey_Space,        HidNpadButton_B },      // jump / confirm
+  { HidKeyboardKey_Return,       HidNpadButton_B },      // confirm
+  { HidKeyboardKey_Backspace,    HidNpadButton_A },      // back / cancel
+  { HidKeyboardKey_R,            HidNpadButton_Y },      // reload
+  { HidKeyboardKey_E,            HidNpadButton_X },      // action / weapon
+  { HidKeyboardKey_LeftShift,    HidNpadButton_L },
+  { HidKeyboardKey_Q,            HidNpadButton_R },
+  { HidKeyboardKey_LeftControl,  HidNpadButton_StickL }, // crouch
+  { HidKeyboardKey_C,            HidNpadButton_StickL },
+  { HidKeyboardKey_V,            HidNpadButton_StickR }, // melee
+  { HidKeyboardKey_Escape,       HidNpadButton_Plus },   // pause
+  { HidKeyboardKey_Tab,          HidNpadButton_Minus },
+  { HidKeyboardKey_UpArrow,      HidNpadButton_Up },
+  { HidKeyboardKey_DownArrow,    HidNpadButton_Down },
+  { HidKeyboardKey_LeftArrow,    HidNpadButton_Left },
+  { HidKeyboardKey_RightArrow,   HidNpadButton_Right },
+};
+
+static int key_is_down(const HidKeyboardState *k, HidKeyboardKey key) {
+  return (int)((k->keys[key / 64] >> (key % 64)) & 1);
+}
+
+static void kbm_init(void) {
+  hidInitializeKeyboard();
+  hidInitializeMouse();
+}
+
+// adds keyboard/mouse input on top of the pad state:
+// buttons are OR-ed into *down, WASD goes to kb_l[], mouse motion to mouse_r[]
+static void kbm_update(u64 *down, float kb_l[2], float mouse_r[2]) {
+  kb_l[0] = kb_l[1] = mouse_r[0] = mouse_r[1] = 0.0f;
+  if (!config.kbm_enabled)
+    return;
+
+  HidKeyboardState ks;
+  if (hidGetKeyboardStates(&ks, 1) > 0) {
+    for (unsigned int i = 0; i < sizeof(key_map) / sizeof(*key_map); i++)
+      if (key_is_down(&ks, key_map[i].key))
+        *down |= key_map[i].pad;
+    if (key_is_down(&ks, HidKeyboardKey_D)) kb_l[0] += 1.0f;
+    if (key_is_down(&ks, HidKeyboardKey_A)) kb_l[0] -= 1.0f;
+    if (key_is_down(&ks, HidKeyboardKey_S)) kb_l[1] += 1.0f; // Android Y points down
+    if (key_is_down(&ks, HidKeyboardKey_W)) kb_l[1] -= 1.0f;
+  }
+
+  // sum every mouse sample since the last frame, like the gyro does
+  static u64 last_seen = 0;
+  static int first = 1;
+  static u64 prev_tick = 0;
+  const u64 now = armGetSystemTick();
+  float dt = prev_tick ? (float)(now - prev_tick) / (float)armGetSystemTickFreq() : (1.0f / 60.0f);
+  prev_tick = now;
+  if (dt < 0.002f) dt = 0.002f;
+  if (dt > 0.1f) dt = 0.1f;
+
+  HidMouseState ms[16];
+  const s32 n = hidGetMouseStates(ms, 16);
+  s32 dx = 0, dy = 0;
+  u64 newest = last_seen;
+  u32 buttons = 0;
+  for (int i = 0; i < n; i++) {
+    if (ms[i].sampling_number > newest) {
+      newest = ms[i].sampling_number;
+      buttons = ms[i].buttons;
+    }
+    if (!first && ms[i].sampling_number > last_seen) {
+      dx += ms[i].delta_x;
+      dy += ms[i].delta_y;
+    }
+  }
+  static u32 held_buttons = 0;
+  if (newest != last_seen)
+    held_buttons = buttons; // buttons of the newest sample
+  if (n > 0 && newest + 1000 < last_seen)
+    newest = 0; // counter went backwards: start over
+  last_seen = newest;
+  first = 0;
+
+  if (held_buttons & HidMouseButton_Left)   *down |= HidNpadButton_ZR; // fire
+  if (held_buttons & HidMouseButton_Right)  *down |= HidNpadButton_ZL; // aim / bullet time
+  if (held_buttons & HidMouseButton_Middle) *down |= HidNpadButton_StickR;
+
+  // counts per second -> stick units; Android Y points down so +dy looks down
+  const float k = config.mouse_sens * 0.001f / dt;
+  mouse_r[0] = (float)dx * k;
+  mouse_r[1] = (float)dy * k * (config.mouse_invert_y ? -1.0f : 1.0f);
+}
+
 static void update_gamepad(void) {
   padUpdate(&pad);
   gyro_update();
-  const u64 down = padGetButtons(&pad);
+  u64 down = padGetButtons(&pad);
+  float kb_l[2], mouse_r[2];
+  kbm_update(&down, kb_l, mouse_r);
   const u64 changed = down ^ pad_prev;
 
   for (unsigned int i = 0; i < sizeof(pad_map) / sizeof(*pad_map); i++) {
@@ -462,10 +566,12 @@ static void update_gamepad(void) {
   if (down & HidNpadButton_Right) lx =  1.0f;
   if (down & HidNpadButton_Up)    ly = -1.0f;
   if (down & HidNpadButton_Down)  ly =  1.0f;
+  if (kb_l[0] != 0.0f) lx = kb_l[0];
+  if (kb_l[1] != 0.0f) ly = kb_l[1];
 
   // gyro is added on top of the right stick, clamped to the stick range
-  float rx = (float)rs.x * scale + gyro_x;
-  float ry = (float)rs.y * -scale + gyro_y;
+  float rx = (float)rs.x * scale + gyro_x + mouse_r[0];
+  float ry = (float)rs.y * -scale + gyro_y + mouse_r[1];
   const float lim = config.gyro_clamp > 1.0f ? config.gyro_clamp : 1.0f;
   if (rx > lim) rx = lim;
   if (rx < -lim) rx = -lim;
@@ -635,6 +741,7 @@ int main(void) {
   padConfigureInput(8, HidNpadStyleSet_NpadStandard);
   padInitializeAny(&pad);
   gyro_init();
+  kbm_init();
   hidInitializeTouchScreen();
   implOnGamepadConnected(fake_env, NULL, 0);
 

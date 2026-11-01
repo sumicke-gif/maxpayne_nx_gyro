@@ -32,6 +32,9 @@
   CONFIG_VAR_FLOAT(gyro_sens_x); \
   CONFIG_VAR_FLOAT(gyro_sens_y); \
   CONFIG_VAR_FLOAT(gyro_clamp); \
+  CONFIG_VAR_INT(kbm_enabled); \
+  CONFIG_VAR_INT(mouse_invert_y); \
+  CONFIG_VAR_FLOAT(mouse_sens); \
   CONFIG_VAR_FLOAT(decal_limit); \
   CONFIG_VAR_FLOAT(debris_limit); \
   CONFIG_VAR_STR(mod_file);
@@ -73,6 +76,9 @@ int read_config(const char *file) {
   config.gyro_gravity_yaw = 1; // 1 = yaw around real vertical (no roll leak), 0 = fixed sensor Z axis
   config.gyro_sens_x = 1.0f; // 1.0 = full stick deflection at 180 deg/s
   config.gyro_sens_y = 1.0f;
+  config.kbm_enabled = 1; // USB/bluetooth keyboard + mouse
+  config.mouse_invert_y = 0;
+  config.mouse_sens = 1.0f; // 1.0 = full stick at ~1000 mouse counts/sec
   config.gyro_clamp = 1.0f; // max total right-stick deflection incl. gyro; try 2.0-3.0 if flicks feel capped
   config.decal_limit = 0.5f;
   config.debris_limit = 1.0f;
