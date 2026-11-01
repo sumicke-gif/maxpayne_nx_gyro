@@ -32,6 +32,7 @@
   CONFIG_VAR_FLOAT(gyro_sens_x); \
   CONFIG_VAR_FLOAT(gyro_sens_y); \
   CONFIG_VAR_FLOAT(gyro_clamp); \
+  CONFIG_VAR_INT(look_carry); \
   CONFIG_VAR_INT(kbm_enabled); \
   CONFIG_VAR_INT(mouse_invert_y); \
   CONFIG_VAR_FLOAT(mouse_sens); \
@@ -76,6 +77,7 @@ int read_config(const char *file) {
   config.gyro_gravity_yaw = 1; // 1 = yaw around real vertical (no roll leak), 0 = fixed sensor Z axis
   config.gyro_sens_x = 1.0f; // 1.0 = full stick deflection at 180 deg/s
   config.gyro_sens_y = 1.0f;
+  config.look_carry = 1; // motion the stick can't show this frame (fast flicks) is carried into the next frames
   config.kbm_enabled = 1; // USB/bluetooth keyboard + mouse
   config.mouse_invert_y = 0;
   config.mouse_sens = 1.0f; // 1.0 = full stick at ~1000 mouse counts/sec

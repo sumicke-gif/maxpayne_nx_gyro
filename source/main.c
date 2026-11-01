@@ -448,19 +448,33 @@ static const KeyMap key_map[] = {
   { HidKeyboardKey_Space,        HidNpadButton_B },      // jump / confirm
   { HidKeyboardKey_Return,       HidNpadButton_B },      // confirm
   { HidKeyboardKey_Backspace,    HidNpadButton_A },      // back / cancel
-  { HidKeyboardKey_R,            HidNpadButton_Y },      // reload
-  { HidKeyboardKey_E,            HidNpadButton_X },      // action / weapon
-  { HidKeyboardKey_LeftShift,    HidNpadButton_L },
-  { HidKeyboardKey_Q,            HidNpadButton_R },
+  { HidKeyboardKey_Tab,          HidNpadButton_X },      // painkiller
+  { HidKeyboardKey_F,            HidNpadButton_Y },      // interact
+  { HidKeyboardKey_E,            HidNpadButton_R },      // next weapon
+  { HidKeyboardKey_Q,            HidNpadButton_L },      // previous weapon (AZERTY: the key labelled A)
   { HidKeyboardKey_LeftControl,  HidNpadButton_StickL }, // crouch
   { HidKeyboardKey_C,            HidNpadButton_StickL },
   { HidKeyboardKey_V,            HidNpadButton_StickR }, // melee
   { HidKeyboardKey_Escape,       HidNpadButton_Plus },   // pause
-  { HidKeyboardKey_Tab,          HidNpadButton_Minus },
   { HidKeyboardKey_UpArrow,      HidNpadButton_Up },
   { HidKeyboardKey_DownArrow,    HidNpadButton_Down },
   { HidKeyboardKey_LeftArrow,    HidNpadButton_Left },
   { HidKeyboardKey_RightArrow,   HidNpadButton_Right },
+};
+
+// TEST KEYS: send raw game button codes the normal mapping never uses, to find
+// which one is reload (and others). F5..F9 -> codes 5, 8, 9, 10, 11.
+typedef struct {
+  HidKeyboardKey key;
+  int code;
+} RawKeyMap;
+
+static const RawKeyMap raw_key_map[] = {
+  { HidKeyboardKey_F5, 5 },
+  { HidKeyboardKey_F6, 8 },
+  { HidKeyboardKey_F7, 9 },
+  { HidKeyboardKey_F8, 10 },
+  { HidKeyboardKey_F9, 11 },
 };
 
 static int key_is_down(const HidKeyboardState *k, HidKeyboardKey key) {
@@ -474,8 +488,9 @@ static void kbm_init(void) {
 
 // adds keyboard/mouse input on top of the pad state:
 // buttons are OR-ed into *down, WASD goes to kb_l[], mouse motion to mouse_r[]
-static void kbm_update(u64 *down, float kb_l[2], float mouse_r[2]) {
+static void kbm_update(u64 *down, u32 *raw_down, float dt, float kb_l[2], float mouse_r[2]) {
   kb_l[0] = kb_l[1] = mouse_r[0] = mouse_r[1] = 0.0f;
+  *raw_down = 0;
   if (!config.kbm_enabled)
     return;
 
@@ -484,6 +499,9 @@ static void kbm_update(u64 *down, float kb_l[2], float mouse_r[2]) {
     for (unsigned int i = 0; i < sizeof(key_map) / sizeof(*key_map); i++)
       if (key_is_down(&ks, key_map[i].key))
         *down |= key_map[i].pad;
+    for (unsigned int i = 0; i < sizeof(raw_key_map) / sizeof(*raw_key_map); i++)
+      if (key_is_down(&ks, raw_key_map[i].key))
+        *raw_down |= 1u << raw_key_map[i].code;
     if (key_is_down(&ks, HidKeyboardKey_D)) kb_l[0] += 1.0f;
     if (key_is_down(&ks, HidKeyboardKey_A)) kb_l[0] -= 1.0f;
     if (key_is_down(&ks, HidKeyboardKey_S)) kb_l[1] += 1.0f; // Android Y points down
@@ -493,13 +511,6 @@ static void kbm_update(u64 *down, float kb_l[2], float mouse_r[2]) {
   // sum every mouse sample since the last frame, like the gyro does
   static u64 last_seen = 0;
   static int first = 1;
-  static u64 prev_tick = 0;
-  const u64 now = armGetSystemTick();
-  float dt = prev_tick ? (float)(now - prev_tick) / (float)armGetSystemTickFreq() : (1.0f / 60.0f);
-  prev_tick = now;
-  if (dt < 0.002f) dt = 0.002f;
-  if (dt > 0.1f) dt = 0.1f;
-
   HidMouseState ms[16];
   const s32 n = hidGetMouseStates(ms, 16);
   s32 dx = 0, dy = 0;
@@ -536,9 +547,33 @@ static void kbm_update(u64 *down, float kb_l[2], float mouse_r[2]) {
 static void update_gamepad(void) {
   padUpdate(&pad);
   gyro_update();
+  // frame time, used by the mouse and the look carry-over
+  static u64 prev_tick = 0;
+  const u64 tick_now = armGetSystemTick();
+  float dt = prev_tick ? (float)(tick_now - prev_tick) / (float)armGetSystemTickFreq() : (1.0f / 60.0f);
+  prev_tick = tick_now;
+  if (dt < 0.002f) dt = 0.002f;
+  if (dt > 0.1f) dt = 0.1f;
+
   u64 down = padGetButtons(&pad);
+  u32 raw_down;
   float kb_l[2], mouse_r[2];
-  kbm_update(&down, kb_l, mouse_r);
+  kbm_update(&down, &raw_down, dt, kb_l, mouse_r);
+
+  // raw game button codes from the test keys
+  static u32 raw_prev = 0;
+  const u32 raw_changed = raw_down ^ raw_prev;
+  for (int i = 0; i < 16; i++) {
+    if (raw_changed & (1u << i)) {
+      if (raw_down & (1u << i)) {
+        set_input_mode(1);
+        implOnGamepadButtonDown(fake_env, NULL, 0, i);
+      } else {
+        implOnGamepadButtonUp(fake_env, NULL, 0, i);
+      }
+    }
+  }
+  raw_prev = raw_down;
   const u64 changed = down ^ pad_prev;
 
   for (unsigned int i = 0; i < sizeof(pad_map) / sizeof(*pad_map); i++) {
@@ -570,9 +605,31 @@ static void update_gamepad(void) {
   if (kb_l[1] != 0.0f) ly = kb_l[1];
 
   // gyro is added on top of the right stick, clamped to the stick range
-  float rx = (float)rs.x * scale + gyro_x + mouse_r[0];
-  float ry = (float)rs.y * -scale + gyro_y + mouse_r[1];
   const float lim = config.gyro_clamp > 1.0f ? config.gyro_clamp : 1.0f;
+
+  // gyro + mouse are turn *rates*; when a fast flick asks for more than the stick can show in
+  // one frame, keep the excess and spend it over the next frames instead of losing it
+  static float carry_acc[2];
+  float look_x = gyro_x + mouse_r[0];
+  float look_y = gyro_y + mouse_r[1];
+  if (config.look_carry) {
+    const float maxacc = lim * 0.3f; // never store more than ~0.3s of full-speed turning
+    float *acc[2] = { &carry_acc[0], &carry_acc[1] };
+    float *v[2] = { &look_x, &look_y };
+    for (int i = 0; i < 2; i++) {
+      *acc[i] += *v[i] * dt;
+      if (*acc[i] > maxacc) *acc[i] = maxacc;
+      if (*acc[i] < -maxacc) *acc[i] = -maxacc;
+      float out = *acc[i] / dt;
+      if (out > lim) out = lim;
+      if (out < -lim) out = -lim;
+      *acc[i] -= out * dt;
+      *v[i] = out;
+    }
+  }
+
+  float rx = (float)rs.x * scale + look_x;
+  float ry = (float)rs.y * -scale + look_y;
   if (rx > lim) rx = lim;
   if (rx < -lim) rx = -lim;
   if (ry > lim) ry = lim;

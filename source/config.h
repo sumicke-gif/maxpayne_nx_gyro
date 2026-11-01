@@ -46,6 +46,7 @@ typedef struct {
   float gyro_sens_x;
   float gyro_sens_y;
   float gyro_clamp;
+  int look_carry;
   int kbm_enabled;
   int mouse_invert_y;
   float mouse_sens;
