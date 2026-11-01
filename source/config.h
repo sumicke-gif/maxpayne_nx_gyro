@@ -49,6 +49,7 @@ typedef struct {
   int look_carry;
   int kbm_enabled;
   int mouse_invert_y;
+  int wheel_swap;
   float mouse_sens;
   float decal_limit;
   float debris_limit;

@@ -447,7 +447,7 @@ typedef struct {
 static const KeyMap key_map[] = {
   { HidKeyboardKey_Space,        HidNpadButton_B },      // jump / confirm
   { HidKeyboardKey_Return,       HidNpadButton_B },      // confirm
-  { HidKeyboardKey_Backspace,    HidNpadButton_A },      // back / cancel
+  { HidKeyboardKey_R,            HidNpadButton_A },      // reload (also back / cancel in menus)
   { HidKeyboardKey_Tab,          HidNpadButton_X },      // painkiller
   { HidKeyboardKey_F,            HidNpadButton_Y },      // interact
   { HidKeyboardKey_E,            HidNpadButton_R },      // next weapon
@@ -456,25 +456,11 @@ static const KeyMap key_map[] = {
   { HidKeyboardKey_C,            HidNpadButton_StickL },
   { HidKeyboardKey_V,            HidNpadButton_StickR }, // melee
   { HidKeyboardKey_Escape,       HidNpadButton_Plus },   // pause
+  { HidKeyboardKey_G,            HidNpadButton_Minus },  // game "back" button
   { HidKeyboardKey_UpArrow,      HidNpadButton_Up },
   { HidKeyboardKey_DownArrow,    HidNpadButton_Down },
   { HidKeyboardKey_LeftArrow,    HidNpadButton_Left },
   { HidKeyboardKey_RightArrow,   HidNpadButton_Right },
-};
-
-// TEST KEYS: send raw game button codes the normal mapping never uses, to find
-// which one is reload (and others). F5..F9 -> codes 5, 8, 9, 10, 11.
-typedef struct {
-  HidKeyboardKey key;
-  int code;
-} RawKeyMap;
-
-static const RawKeyMap raw_key_map[] = {
-  { HidKeyboardKey_F5, 5 },
-  { HidKeyboardKey_F6, 8 },
-  { HidKeyboardKey_F7, 9 },
-  { HidKeyboardKey_F8, 10 },
-  { HidKeyboardKey_F9, 11 },
 };
 
 static int key_is_down(const HidKeyboardState *k, HidKeyboardKey key) {
@@ -488,9 +474,8 @@ static void kbm_init(void) {
 
 // adds keyboard/mouse input on top of the pad state:
 // buttons are OR-ed into *down, WASD goes to kb_l[], mouse motion to mouse_r[]
-static void kbm_update(u64 *down, u32 *raw_down, float dt, float kb_l[2], float mouse_r[2]) {
+static void kbm_update(u64 *down, float dt, float kb_l[2], float mouse_r[2]) {
   kb_l[0] = kb_l[1] = mouse_r[0] = mouse_r[1] = 0.0f;
-  *raw_down = 0;
   if (!config.kbm_enabled)
     return;
 
@@ -499,9 +484,6 @@ static void kbm_update(u64 *down, u32 *raw_down, float dt, float kb_l[2], float 
     for (unsigned int i = 0; i < sizeof(key_map) / sizeof(*key_map); i++)
       if (key_is_down(&ks, key_map[i].key))
         *down |= key_map[i].pad;
-    for (unsigned int i = 0; i < sizeof(raw_key_map) / sizeof(*raw_key_map); i++)
-      if (key_is_down(&ks, raw_key_map[i].key))
-        *raw_down |= 1u << raw_key_map[i].code;
     if (key_is_down(&ks, HidKeyboardKey_D)) kb_l[0] += 1.0f;
     if (key_is_down(&ks, HidKeyboardKey_A)) kb_l[0] -= 1.0f;
     if (key_is_down(&ks, HidKeyboardKey_S)) kb_l[1] += 1.0f; // Android Y points down
@@ -514,6 +496,7 @@ static void kbm_update(u64 *down, u32 *raw_down, float dt, float kb_l[2], float 
   HidMouseState ms[16];
   const s32 n = hidGetMouseStates(ms, 16);
   s32 dx = 0, dy = 0;
+  int wheel_up = 0, wheel_dn = 0;
   u64 newest = last_seen;
   u32 buttons = 0;
   for (int i = 0; i < n; i++) {
@@ -524,6 +507,8 @@ static void kbm_update(u64 *down, u32 *raw_down, float dt, float kb_l[2], float 
     if (!first && ms[i].sampling_number > last_seen) {
       dx += ms[i].delta_x;
       dy += ms[i].delta_y;
+      if (ms[i].wheel_delta_y > 0) wheel_up++;
+      else if (ms[i].wheel_delta_y < 0) wheel_dn++;
     }
   }
   static u32 held_buttons = 0;
@@ -533,6 +518,23 @@ static void kbm_update(u64 *down, u32 *raw_down, float dt, float kb_l[2], float 
     newest = 0; // counter went backwards: start over
   last_seen = newest;
   first = 0;
+
+  // mouse wheel -> weapon change. one notch = one short button press (down for a frame, then up)
+  // [0] = previous weapon (L), [1] = next weapon (R)
+  static int wheel_pending[2], wheel_active[2];
+  wheel_pending[config.wheel_swap ? 1 : 0] += wheel_up;
+  wheel_pending[config.wheel_swap ? 0 : 1] += wheel_dn;
+  const u64 wheel_btn[2] = { HidNpadButton_L, HidNpadButton_R };
+  for (int i = 0; i < 2; i++) {
+    if (wheel_pending[i] > 4) wheel_pending[i] = 4; // don't queue up a huge burst
+    if (wheel_active[i]) {
+      wheel_active[i] = 0; // release this frame
+    } else if (wheel_pending[i] > 0) {
+      wheel_pending[i]--;
+      wheel_active[i] = 1;
+      *down |= wheel_btn[i];
+    }
+  }
 
   if (held_buttons & HidMouseButton_Left)   *down |= HidNpadButton_ZR; // fire
   if (held_buttons & HidMouseButton_Right)  *down |= HidNpadButton_ZL; // aim / bullet time
@@ -556,24 +558,9 @@ static void update_gamepad(void) {
   if (dt > 0.1f) dt = 0.1f;
 
   u64 down = padGetButtons(&pad);
-  u32 raw_down;
   float kb_l[2], mouse_r[2];
-  kbm_update(&down, &raw_down, dt, kb_l, mouse_r);
+  kbm_update(&down, dt, kb_l, mouse_r);
 
-  // raw game button codes from the test keys
-  static u32 raw_prev = 0;
-  const u32 raw_changed = raw_down ^ raw_prev;
-  for (int i = 0; i < 16; i++) {
-    if (raw_changed & (1u << i)) {
-      if (raw_down & (1u << i)) {
-        set_input_mode(1);
-        implOnGamepadButtonDown(fake_env, NULL, 0, i);
-      } else {
-        implOnGamepadButtonUp(fake_env, NULL, 0, i);
-      }
-    }
-  }
-  raw_prev = raw_down;
   const u64 changed = down ^ pad_prev;
 
   for (unsigned int i = 0; i < sizeof(pad_map) / sizeof(*pad_map); i++) {

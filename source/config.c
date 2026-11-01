@@ -35,6 +35,7 @@
   CONFIG_VAR_INT(look_carry); \
   CONFIG_VAR_INT(kbm_enabled); \
   CONFIG_VAR_INT(mouse_invert_y); \
+  CONFIG_VAR_INT(wheel_swap); \
   CONFIG_VAR_FLOAT(mouse_sens); \
   CONFIG_VAR_FLOAT(decal_limit); \
   CONFIG_VAR_FLOAT(debris_limit); \
@@ -80,6 +81,7 @@ int read_config(const char *file) {
   config.look_carry = 1; // motion the stick can't show this frame (fast flicks) is carried into the next frames
   config.kbm_enabled = 1; // USB/bluetooth keyboard + mouse
   config.mouse_invert_y = 0;
+  config.wheel_swap = 0; // 0 = wheel up: previous weapon, wheel down: next weapon; 1 = the other way
   config.mouse_sens = 1.0f; // 1.0 = full stick at ~1000 mouse counts/sec
   config.gyro_clamp = 1.0f; // max total right-stick deflection incl. gyro; try 2.0-3.0 if flicks feel capped
   config.decal_limit = 0.5f;
